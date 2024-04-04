@@ -65,47 +65,90 @@ func Initialize(name, site string, client *apigateway.Client) error {
 
 	// create wildcard proxy path
 	path := "{proxy+}"
-	newResource, err := client.GetResource(context.TODO(), &apigateway.GetResourceInput{
+	newApiResource, err := client.GetResource(context.TODO(), &apigateway.GetResourceInput{
 		RestApiId: newApi.Id,
 	})
 	if err != nil {
 		return err
 	}
-	client.CreateResource(context.TODO(), &apigateway.CreateResourceInput{
+
+	// creates a resource to handle incoming requests
+	incomingHandler, err := client.CreateResource(context.TODO(), &apigateway.CreateResourceInput{
 		RestApiId: newApi.Id,
 		PathPart:  &path,
-		ParentId:  newResource.ParentId,
-	})
-
-	// allow all methods to new resource
-	allowedHttpMethod := "ANY"
-	authorizationType := "NONE"
-	methodsRequestParams := make(map[string]bool)
-	methodsRequestParams["method.request.path.proxy"] = true
-	methodsRequestParams["method.request.header.X-My-X-Forwarded-For"] = true
-	_, err = client.PutMethod(context.TODO(), &apigateway.PutMethodInput{
-		RestApiId:         newApi.Id,
-		ResourceId:        newResource.Id,
-		HttpMethod:        &allowedHttpMethod,
-		AuthorizationType: &authorizationType,
-		RequestParameters: methodsRequestParams,
+		ParentId:  newApiResource.ParentId,
 	})
 	if err != nil {
 		return err
 	}
 
-	// make new resource route traffic to new host
-	integrationRequestParams := make(map[string]string)
-	integrationRequestParams["integration.request.path.proxy"] = "method.request.path.proxy"
-	integrationRequestParams["integration.request.header.X-Forwarded-For"] = "method.request.header.X-Forwarded-For"
+	// configures to allowe all HTTP methods on the created resource
+	allowedHttpMethod := "ANY"
+	authorizationType := "NONE"
+	proxyMethodsRequestParams := make(map[string]bool)
+	proxyMethodsRequestParams["method.request.path.proxy"] = true                  // ensures the path portion of the incoming request URL gets forwarded to the target site
+	proxyMethodsRequestParams["method.request.header.X-My-X-Forwarded-For"] = true // preserve X-Forwarded-For header by using a temp header X-My-X-Fowarded-For
+	_, err = client.PutMethod(context.TODO(), &apigateway.PutMethodInput{
+		RestApiId:         newApi.Id,
+		ResourceId:        newApiResource.Id,
+		HttpMethod:        &allowedHttpMethod,
+		AuthorizationType: &authorizationType,
+		RequestParameters: proxyMethodsRequestParams,
+	})
+	if err != nil {
+		return err
+	}
+
+	// configures the new api gateway resource to integrate with the target site
+	proxyIntegrationRequestParams := make(map[string]string)
+	proxyIntegrationRequestParams["integration.request.path.proxy"] = "method.request.path.proxy"
+	proxyIntegrationRequestParams["integration.request.header.X-Forwarded-For"] = "method.request.header.X-Forwarded-For"
 	_, err = client.PutIntegration(context.TODO(), &apigateway.PutIntegrationInput{
 		RestApiId:             newApi.Id,
-		ResourceId:            newResource.Id,
+		ResourceId:            newApiResource.Id,
 		HttpMethod:            &allowedHttpMethod,
 		IntegrationHttpMethod: &allowedHttpMethod,
 		Uri:                   &site,
 		ConnectionType:        types.ConnectionTypeInternet,
-		RequestParameters:     integrationRequestParams,
+		RequestParameters:     proxyIntegrationRequestParams,
+	})
+	if err != nil {
+		return err
+	}
+
+	// handle requests received for the resource created in block 5
+	_, err = client.PutMethod(context.TODO(), &apigateway.PutMethodInput{
+		RestApiId:         newApi.Id,
+		ResourceId:        incomingHandler.Id,
+		HttpMethod:        &allowedHttpMethod,
+		AuthorizationType: &authorizationType,
+		RequestParameters: proxyMethodsRequestParams,
+	})
+	if err != nil {
+		return err
+	}
+
+	// configure for paths with trailing forward slash
+	destinationUri := site + site + "/proxy"
+	_, err = client.PutIntegration(context.TODO(), &apigateway.PutIntegrationInput{
+		RestApiId:             newApi.Id,
+		ResourceId:            newApiResource.Id,
+		Type:                  types.IntegrationTypeHttpProxy,
+		HttpMethod:            &allowedHttpMethod,
+		IntegrationHttpMethod: &allowedHttpMethod,
+		Uri:                   &destinationUri,
+		ConnectionType:        types.ConnectionTypeInternet,
+		RequestParameters:     proxyIntegrationRequestParams,
+	})
+	if err != nil {
+		return err
+	}
+
+	// create deployment resource so the new API is callable
+	stageName := "ProxyStage"
+	_, err = client.CreateDeployment(context.TODO(), &apigateway.CreateDeploymentInput{
+		RestApiId: newApi.Id,
+		StageName: &stageName,
 	})
 	if err != nil {
 		return err
