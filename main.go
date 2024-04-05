@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"net"
 	"net/http"
@@ -15,13 +16,13 @@ import (
 
 var (
 	DEFAULT_REGIONS = []string{
-		"us-east-1", "us-east-2", "us-west-1", "us-west-2",
-		"eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
-		"ca-central-1",
+		"us-east-1", "us-east-2",
 	}
 
 	EXTRA_REGIONS = append(DEFAULT_REGIONS,
-		"ap-south-1", "ap-northeast-3", "ap-northeast-2",
+		"us-west-1", "us-west-2",
+		"eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
+		"ca-central-1", "ap-south-1", "ap-northeast-3", "ap-northeast-2",
 		"ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
 		"sa-east-1",
 	)
@@ -36,6 +37,7 @@ type apiGateway struct {
 	Site      string
 	Name      string
 	Endpoints []string
+	Regions   []string
 }
 
 type ApiGateway interface {
@@ -61,6 +63,7 @@ func NewApiGateway(link, name string) (*apiGateway, error) {
 		Site:      site.Host,
 		Name:      name,
 		Endpoints: []string{},
+		Regions:   DEFAULT_REGIONS,
 	}, nil
 }
 
@@ -80,7 +83,7 @@ func ApiExists(name string, client *apigateway.Client) bool {
 }
 
 // initializes the API Gateway in the specified region.
-func (ag *apiGateway) Initialize(client *apigateway.Client) error {
+func (ag *apiGateway) Initialize(client *apigateway.Client, region string) error {
 	// if api resource with name already exists, return
 	if ApiExists(ag.Name, client) {
 		return nil
@@ -223,7 +226,22 @@ func (ag *apiGateway) Reroute(request *http.Request) {
 }
 
 func (ag *apiGateway) Start() {
-	// for _, ep := range ag.Endpoints {
-	// 	go ag.Initialize()
-	// }
+	client := apigateway.Client{}
+	for _, re := range ag.Regions {
+		go ag.Initialize(&client, re)
+	}
+}
+
+func main() {
+
+	fmt.Println("main")
+
+	ag, err := NewApiGateway("https://mangahere.cc", "mangahere")
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("%v+", ag)
+
+	ag.Start()
 }
