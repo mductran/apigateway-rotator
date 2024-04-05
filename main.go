@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/binary"
+	"math/rand"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/apigateway"
 	"github.com/aws/aws-sdk-go-v2/service/apigateway/types"
 )
@@ -28,6 +32,38 @@ var (
 	)
 )
 
+type apiGateway struct {
+	Site      string
+	Name      string
+	Endpoints []string
+}
+
+type ApiGateway interface {
+	Initialize()
+	Start()
+	Reroute()
+}
+
+func randomIpv4() net.IP {
+	buf := make([]byte, 4)
+	ip := rand.Uint32()
+	binary.LittleEndian.PutUint32(buf, ip)
+	return net.IP(buf)
+}
+
+func NewApiGateway(link, name string) (*apiGateway, error) {
+	site, err := url.Parse(link)
+	if err != nil {
+		return nil, err
+	}
+
+	return &apiGateway{
+		Site:      site.Host,
+		Name:      name,
+		Endpoints: []string{},
+	}, nil
+}
+
 // check if an api already exists in region
 func ApiExists(name string, client *apigateway.Client) bool {
 	output, err := client.GetRestApis(context.TODO(), &apigateway.GetRestApisInput{})
@@ -44,15 +80,15 @@ func ApiExists(name string, client *apigateway.Client) bool {
 }
 
 // initializes the API Gateway in the specified region.
-func Initialize(name, site string, client *apigateway.Client) error {
+func (ag *apiGateway) Initialize(client *apigateway.Client) error {
 	// if api resource with name already exists, return
-	if ApiExists(name, client) {
+	if ApiExists(ag.Name, client) {
 		return nil
 	}
 
 	// create new rest api
 	newApi, err := client.CreateRestApi(context.TODO(), &apigateway.CreateRestApiInput{
-		Name: &name,
+		Name: &ag.Name,
 		EndpointConfiguration: &types.EndpointConfiguration{
 			Types: []types.EndpointType{
 				types.EndpointTypeRegional,
@@ -87,7 +123,7 @@ func Initialize(name, site string, client *apigateway.Client) error {
 	authorizationType := "NONE"
 	proxyMethodsRequestParams := make(map[string]bool)
 	proxyMethodsRequestParams["method.request.path.proxy"] = true                  // ensures the path portion of the incoming request URL gets forwarded to the target site
-	proxyMethodsRequestParams["method.request.header.X-My-X-Forwarded-For"] = true // preserve X-Forwarded-For header by using a temp header X-My-X-Fowarded-For
+	proxyMethodsRequestParams["method.request.header.X-Forwarded-For-Temp"] = true // preserve X-Forwarded-For header by using a temp header X-My-X-Fowarded-For
 	_, err = client.PutMethod(context.TODO(), &apigateway.PutMethodInput{
 		RestApiId:         newApi.Id,
 		ResourceId:        newApiResource.Id,
@@ -108,7 +144,7 @@ func Initialize(name, site string, client *apigateway.Client) error {
 		ResourceId:            newApiResource.Id,
 		HttpMethod:            &allowedHttpMethod,
 		IntegrationHttpMethod: &allowedHttpMethod,
-		Uri:                   &site,
+		Uri:                   &ag.Site,
 		ConnectionType:        types.ConnectionTypeInternet,
 		RequestParameters:     proxyIntegrationRequestParams,
 	})
@@ -129,14 +165,13 @@ func Initialize(name, site string, client *apigateway.Client) error {
 	}
 
 	// configure for paths with trailing forward slash
-	destinationUri := site + site + "/proxy"
 	_, err = client.PutIntegration(context.TODO(), &apigateway.PutIntegrationInput{
 		RestApiId:             newApi.Id,
 		ResourceId:            newApiResource.Id,
 		Type:                  types.IntegrationTypeHttpProxy,
 		HttpMethod:            &allowedHttpMethod,
 		IntegrationHttpMethod: &allowedHttpMethod,
-		Uri:                   &destinationUri,
+		Uri:                   &ag.Site,
 		ConnectionType:        types.ConnectionTypeInternet,
 		RequestParameters:     proxyIntegrationRequestParams,
 	})
@@ -157,13 +192,38 @@ func Initialize(name, site string, client *apigateway.Client) error {
 	return nil
 }
 
-func main() {
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		panic(err)
+// route the original request through a proxy
+func (ag *apiGateway) Reroute(request *http.Request) {
+	// use a random endpoints as proxy
+	ep := ag.Endpoints[rand.Intn(len(ag.Endpoints)-1)]
+
+	// replace request's url with proxy endpoint and replace Host header
+	_, site, found := strings.Cut(request.RequestURI, "://")
+	if !found {
+		return
 	}
 
-	client := apigateway.NewFromConfig(cfg)
-	fmt.Println(ApiExists("sample_rest", client))
-	fmt.Println(ApiExists("mango", client))
+	proxyUrl, err := url.Parse("https://" + ep + "/ProxyStage" + site)
+	if err != nil {
+		return
+	}
+	request.URL = proxyUrl
+	request.Header.Add("Host", ep)
+
+	// generate X-Forwarded-For header if original request does not have it
+	// and move original X-Forwarded-For to a temp header
+	val := request.Header.Get("X-Forwarded-For")
+	if val == "" {
+		randIp := randomIpv4().String()
+		request.Header.Add("X-Forwarded-For-Temp", randIp)
+	} else {
+		request.Header.Add("X-Forwarded-For-Temp", val)
+	}
+	request.Header.Del("X-Forwarded-For")
+}
+
+func (ag *apiGateway) Start() {
+	// for _, ep := range ag.Endpoints {
+	// 	go ag.Initialize()
+	// }
 }
