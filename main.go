@@ -228,6 +228,62 @@ func (ag *apiGateway) Start() {
 
 	ctx := context.TODO()
 	for _, re := range ag.Regions {
-		go ag.Initialize(&client, re, ctx)
+		go ag.Initialize(client, re, ctx)
 	}
+}
+
+func (ag *apiGateway) GetGateways(client *apigateway.Client, ctx context.Context) (*[]types.RestApi, error) {
+	result := []types.RestApi{}
+	defaultPosition := ""
+	var defaultLimit int32 = 500
+	complete := false
+	response := apigateway.GetRestApisOutput{}
+
+	for !complete {
+		if defaultPosition != "" {
+			response, err := client.GetRestApis(ctx, &apigateway.GetRestApisInput{
+				Limit:    &defaultLimit,
+				Position: &defaultPosition,
+			})
+			if err != nil {
+				return &result, fmt.Errorf("cannot get rest apis: %w", err)
+			}
+		} else {
+			response, err := client.GetRestApis(ctx, &apigateway.GetRestApisInput{
+				Limit: &defaultLimit,
+			})
+			if err != nil {
+				return &result, fmt.Errorf("cannot get rest apis: %w", err)
+			}
+		}
+		if *response.Position != "" {
+			result = append(result, response.Items...)
+			defaultPosition = *response.Position
+		} else {
+			return &result, errors.Error("empty position while getting apis")
+		}
+	}
+
+	return &result, nil
+}
+
+// delete all gateways from all regions
+func (ag *apiGateway) DeleteGateways(client *apigateway.Client, ctx context.Context) (*[]int, error) {
+	deletedIds := []int{}
+	apis, err := ag.GetGateways(client, ctx)
+	if err != nil {
+		return &deletedIds, err
+	}
+	for _, api := range *apis {
+		response, err := client.DeleteRestApi(ctx, &apigateway.DeleteRestApiInput{
+			RestApiId: api.Id,
+		})
+		if err != nil {
+			return &deletedIds, err
+		} else {
+			deletedIds = append(deletedIds, response.Metadata.Get("Id"))
+		}
+	}
+
+	return &deletedIds, nil
 }
