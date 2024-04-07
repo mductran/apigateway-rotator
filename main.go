@@ -83,181 +83,7 @@ func ApiExists(name string, client *apigateway.Client) bool {
 }
 
 // initializes the API Gateway in the specified region.
-func (ag *apiGateway) Initialize(client *apigateway.Client, region string) error {
-	fmt.Println("init region: ", region)
-
-	// if api resource with name already exists, return
-	if ApiExists(ag.Name, client) {
-		return nil
-	}
-
-	// create new rest api
-	newApi, err := client.CreateRestApi(context.TODO(), &apigateway.CreateRestApiInput{
-		Name: &ag.Name,
-		EndpointConfiguration: &types.EndpointConfiguration{
-			Types: []types.EndpointType{
-				types.EndpointTypeRegional,
-			},
-		},
-	})
-
-	fmt.Println("new api id: ", *newApi.Id)
-	fmt.Println("new api id: ", *newApi.RootResourceId)
-
-	if err != nil {
-		return err
-	}
-
-	// create wildcard proxy path
-	path := "{proxy+}"
-	newApiResource, err := client.GetResource(context.TODO(), &apigateway.GetResourceInput{
-		RestApiId: newApi.Id,
-	})
-	if err != nil {
-		return err
-	}
-
-	// creates a resource to handle incoming requests
-	incomingHandler, err := client.CreateResource(context.TODO(), &apigateway.CreateResourceInput{
-		RestApiId: newApi.Id,
-		PathPart:  &path,
-		ParentId:  newApiResource.ParentId,
-	})
-	if err != nil {
-		return err
-	}
-
-	// configures to allowe all HTTP methods on the created resource
-	allowedHttpMethod := "ANY"
-	authorizationType := "NONE"
-	proxyMethodsRequestParams := make(map[string]bool)
-	proxyMethodsRequestParams["method.request.path.proxy"] = true                  // ensures the path portion of the incoming request URL gets forwarded to the target site
-	proxyMethodsRequestParams["method.request.header.X-Forwarded-For-Temp"] = true // preserve X-Forwarded-For header by using a temp header X-My-X-Fowarded-For
-	_, err = client.PutMethod(context.TODO(), &apigateway.PutMethodInput{
-		RestApiId:         newApi.Id,
-		ResourceId:        newApiResource.Id,
-		HttpMethod:        &allowedHttpMethod,
-		AuthorizationType: &authorizationType,
-		RequestParameters: proxyMethodsRequestParams,
-	})
-	if err != nil {
-		return err
-	}
-
-	// configures the new api gateway resource to integrate with the target site
-	proxyIntegrationRequestParams := make(map[string]string)
-	proxyIntegrationRequestParams["integration.request.path.proxy"] = "method.request.path.proxy"
-	proxyIntegrationRequestParams["integration.request.header.X-Forwarded-For"] = "method.request.header.X-Forwarded-For"
-	_, err = client.PutIntegration(context.TODO(), &apigateway.PutIntegrationInput{
-		RestApiId:             newApi.Id,
-		ResourceId:            newApiResource.Id,
-		HttpMethod:            &allowedHttpMethod,
-		IntegrationHttpMethod: &allowedHttpMethod,
-		Uri:                   &ag.Site,
-		ConnectionType:        types.ConnectionTypeInternet,
-		RequestParameters:     proxyIntegrationRequestParams,
-	})
-	if err != nil {
-		return err
-	}
-
-	// handle requests received for the resource created in block 5
-	_, err = client.PutMethod(context.TODO(), &apigateway.PutMethodInput{
-		RestApiId:         newApi.Id,
-		ResourceId:        incomingHandler.Id,
-		HttpMethod:        &allowedHttpMethod,
-		AuthorizationType: &authorizationType,
-		RequestParameters: proxyMethodsRequestParams,
-	})
-	if err != nil {
-		return err
-	}
-
-	// configure for paths with trailing forward slash
-	_, err = client.PutIntegration(context.TODO(), &apigateway.PutIntegrationInput{
-		RestApiId:             newApi.Id,
-		ResourceId:            newApiResource.Id,
-		Type:                  types.IntegrationTypeHttpProxy,
-		HttpMethod:            &allowedHttpMethod,
-		IntegrationHttpMethod: &allowedHttpMethod,
-		Uri:                   &ag.Site,
-		ConnectionType:        types.ConnectionTypeInternet,
-		RequestParameters:     proxyIntegrationRequestParams,
-	})
-	if err != nil {
-		return err
-	}
-
-	// create deployment resource so the new API is callable
-	stageName := "ProxyStage"
-	_, err = client.CreateDeployment(context.TODO(), &apigateway.CreateDeploymentInput{
-		RestApiId: newApi.Id,
-		StageName: &stageName,
-	})
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// route the original request through a proxy
-func (ag *apiGateway) Reroute(request *http.Request) {
-	// use a random endpoints as proxy
-	ep := ag.Endpoints[rand.Intn(len(ag.Endpoints)-1)]
-
-	// replace request's url with proxy endpoint and replace Host header
-	_, site, found := strings.Cut(request.RequestURI, "://")
-	if !found {
-		return
-	}
-
-	proxyUrl, err := url.Parse("https://" + ep + "/ProxyStage" + site)
-	if err != nil {
-		return
-	}
-	request.URL = proxyUrl
-	request.Header.Add("Host", ep)
-
-	// generate X-Forwarded-For header if original request does not have it
-	// and move original X-Forwarded-For to a temp header
-	val := request.Header.Get("X-Forwarded-For")
-	if val == "" {
-		randIp := randomIpv4().String()
-		request.Header.Add("X-Forwarded-For-Temp", randIp)
-	} else {
-		request.Header.Add("X-Forwarded-For-Temp", val)
-	}
-	request.Header.Del("X-Forwarded-For")
-}
-
-func (ag *apiGateway) Start() {
-	fmt.Println("start")
-	client := apigateway.Client{}
-	for _, re := range ag.Regions {
-		go ag.Initialize(&client, re)
-	}
-}
-
-func Mock() error {
-	fmt.Println("main")
-
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		err = fmt.Errorf("cannot load default config: %v", err)
-		panic(err)
-	}
-	client := apigateway.NewFromConfig(cfg)
-
-	ag, err := NewApiGateway("https://mangahere.cc", "mangahere")
-	if err != nil {
-		panic(err)
-	}
-	region := "us-east-1"
-	ctx := context.TODO()
-
-	fmt.Println(ag.Site)
-
+func (ag *apiGateway) Initialize(client *apigateway.Client, region string, ctx context.Context) error {
 	if ApiExists(ag.Name, client) {
 		return fmt.Errorf("an API already exists with name: %s in region %s", ag.Name, region)
 	}
@@ -335,7 +161,7 @@ func Mock() error {
 
 	_, err = client.PutIntegration(ctx, &apigateway.PutIntegrationInput{
 		RestApiId:             newApi.Id,
-		ResourceId:            newApi.RootResourceId,
+		ResourceId:            wildcardHandler.Id,
 		Type:                  types.IntegrationTypeHttpProxy,
 		HttpMethod:            &allowedHttpMethod,
 		IntegrationHttpMethod: &allowedHttpMethod,
@@ -358,12 +184,50 @@ func Mock() error {
 	}
 
 	return nil
-
 }
 
-func main() {
-	err := Mock()
+// route the original request through a proxy
+func (ag *apiGateway) Reroute(request *http.Request) {
+	// use a random endpoints as proxy
+	ep := ag.Endpoints[rand.Intn(len(ag.Endpoints)-1)]
+
+	// replace request's url with proxy endpoint and replace Host header
+	_, site, found := strings.Cut(request.RequestURI, "://")
+	if !found {
+		return
+	}
+
+	proxyUrl, err := url.Parse("https://" + ep + "/ProxyStage" + site)
 	if err != nil {
+		return
+	}
+	request.URL = proxyUrl
+	request.Header.Add("Host", ep)
+
+	// generate X-Forwarded-For header if original request does not have it
+	// and move original X-Forwarded-For to a temp header
+	val := request.Header.Get("X-Forwarded-For")
+	if val == "" {
+		randIp := randomIpv4().String()
+		request.Header.Add("X-Forwarded-For-Temp", randIp)
+	} else {
+		request.Header.Add("X-Forwarded-For-Temp", val)
+	}
+	request.Header.Del("X-Forwarded-For")
+}
+
+func (ag *apiGateway) Start() {
+	fmt.Println("start")
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		err = fmt.Errorf("cannot load default config: %v", err)
 		panic(err)
+	}
+	client := apigateway.NewFromConfig(cfg)
+
+	ctx := context.TODO()
+	for _, re := range ag.Regions {
+		go ag.Initialize(&client, re, ctx)
 	}
 }
