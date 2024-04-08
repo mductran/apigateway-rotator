@@ -69,7 +69,7 @@ func NewApiGateway(site, name string) (*apiGateway, error) {
 }
 
 // check if an api already exists in region
-func ApiExists(name string, client *apigateway.Client) bool {
+func ApiExistsInRegion(client *apigateway.Client, name string, region string) bool {
 	output, err := client.GetRestApis(context.TODO(), &apigateway.GetRestApisInput{})
 	if err != nil {
 		panic(err)
@@ -84,8 +84,18 @@ func ApiExists(name string, client *apigateway.Client) bool {
 }
 
 // initializes the API Gateway in the specified region.
-func (ag *apiGateway) Initialize(client *apigateway.Client, region string, ctx context.Context) error {
-	if ApiExists(ag.Name, client) {
+func (ag *apiGateway) Initialize(region string, ctx context.Context) error {
+
+	fmt.Println("initializing")
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		panic(err)
+	}
+	cfg.Region = region
+	client := apigateway.NewFromConfig(cfg)
+
+	if ApiExistsInRegion(client, ag.Name, region) {
 		return fmt.Errorf("an API already exists with name: %s in region %s", ag.Name, region)
 	}
 
@@ -217,22 +227,6 @@ func (ag *apiGateway) Reroute(request *http.Request) {
 	request.Header.Del("X-Forwarded-For")
 }
 
-func (ag *apiGateway) Start() {
-	fmt.Println("start")
-
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		err = fmt.Errorf("cannot load default config: %v", err)
-		panic(err)
-	}
-	client := apigateway.NewFromConfig(cfg)
-
-	ctx := context.TODO()
-	for _, re := range ag.Regions {
-		go ag.Initialize(client, re, ctx)
-	}
-}
-
 func (ag *apiGateway) GetGateways(client *apigateway.Client, ctx context.Context) (*[]types.RestApi, error) {
 	result := []types.RestApi{}
 	defaultPosition := ""
@@ -279,4 +273,20 @@ func (ag *apiGateway) DeleteGateways(client *apigateway.Client, ctx context.Cont
 	}
 
 	return &deletedIds, nil
+}
+
+func main() {
+	gateway, err := NewApiGateway("https://mangahere.cc", "mangahere")
+	if err != nil {
+		panic(err)
+	}
+
+	ctx := context.TODO()
+	for _, re := range DEFAULT_REGIONS {
+		fmt.Println(re)
+		err := gateway.Initialize(re, ctx)
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
 }
