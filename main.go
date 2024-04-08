@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -237,30 +238,23 @@ func (ag *apiGateway) GetGateways(client *apigateway.Client, ctx context.Context
 	defaultPosition := ""
 	var defaultLimit int32 = 500
 	complete := false
-	response := apigateway.GetRestApisOutput{}
 
 	for !complete {
+		inputParams := apigateway.GetRestApisInput{
+			Limit: &defaultLimit,
+		}
 		if defaultPosition != "" {
-			response, err := client.GetRestApis(ctx, &apigateway.GetRestApisInput{
-				Limit:    &defaultLimit,
-				Position: &defaultPosition,
-			})
-			if err != nil {
-				return &result, fmt.Errorf("cannot get rest apis: %w", err)
-			}
-		} else {
-			response, err := client.GetRestApis(ctx, &apigateway.GetRestApisInput{
-				Limit: &defaultLimit,
-			})
-			if err != nil {
-				return &result, fmt.Errorf("cannot get rest apis: %w", err)
-			}
+			inputParams.Position = &defaultPosition
+		}
+		response, err := client.GetRestApis(ctx, &inputParams)
+		if err != nil {
+			return &result, fmt.Errorf("cannot get rest apis: %w", err)
 		}
 		if *response.Position != "" {
 			result = append(result, response.Items...)
 			defaultPosition = *response.Position
 		} else {
-			return &result, errors.Error("empty position while getting apis")
+			return &result, errors.New("empty position while getting apis")
 		}
 	}
 
@@ -268,21 +262,20 @@ func (ag *apiGateway) GetGateways(client *apigateway.Client, ctx context.Context
 }
 
 // delete all gateways from all regions
-func (ag *apiGateway) DeleteGateways(client *apigateway.Client, ctx context.Context) (*[]int, error) {
-	deletedIds := []int{}
+func (ag *apiGateway) DeleteGateways(client *apigateway.Client, ctx context.Context) (*[]string, error) {
+	deletedIds := []string{}
 	apis, err := ag.GetGateways(client, ctx)
 	if err != nil {
 		return &deletedIds, err
 	}
 	for _, api := range *apis {
-		response, err := client.DeleteRestApi(ctx, &apigateway.DeleteRestApiInput{
+		if _, err := client.DeleteRestApi(ctx, &apigateway.DeleteRestApiInput{
 			RestApiId: api.Id,
-		})
-		if err != nil {
+		}); err != nil {
 			return &deletedIds, err
-		} else {
-			deletedIds = append(deletedIds, response.Metadata.Get("Id"))
 		}
+		deletedIds = append(deletedIds, *api.Id)
+
 	}
 
 	return &deletedIds, nil
