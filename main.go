@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -227,11 +226,19 @@ func (ag *apiGateway) Reroute(request *http.Request) {
 	request.Header.Del("X-Forwarded-For")
 }
 
-func (ag *apiGateway) GetGateways(client *apigateway.Client, ctx context.Context) (*[]types.RestApi, error) {
+func (ag *apiGateway) GetGateways(region string, ctx context.Context) (*[]types.RestApi, error) {
 	result := []types.RestApi{}
 	defaultPosition := ""
 	var defaultLimit int32 = 500
 	complete := false
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		panic(err)
+	}
+	cfg.Region = region
+	fmt.Println(cfg.Region)
+	client := apigateway.NewFromConfig(cfg)
 
 	for !complete {
 		inputParams := apigateway.GetRestApisInput{
@@ -244,11 +251,14 @@ func (ag *apiGateway) GetGateways(client *apigateway.Client, ctx context.Context
 		if err != nil {
 			return &result, fmt.Errorf("cannot get rest apis: %w", err)
 		}
-		if *response.Position != "" {
+
+		if response != nil && response.Position != nil {
 			result = append(result, response.Items...)
 			defaultPosition = *response.Position
 		} else {
-			return &result, errors.New("empty position while getting apis")
+			// no pagination or end of pagination
+			result = append(result, response.Items...)
+			complete = true
 		}
 	}
 
@@ -256,9 +266,17 @@ func (ag *apiGateway) GetGateways(client *apigateway.Client, ctx context.Context
 }
 
 // delete all gateways from all regions
-func (ag *apiGateway) DeleteGateways(client *apigateway.Client, ctx context.Context) (*[]string, error) {
+func (ag *apiGateway) DeleteGateways(region string, ctx context.Context) (*[]string, error) {
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		panic(err)
+	}
+	cfg.Region = region
+	client := apigateway.NewFromConfig(cfg)
+
 	deletedIds := []string{}
-	apis, err := ag.GetGateways(client, ctx)
+	apis, err := ag.GetGateways(region, ctx)
 	if err != nil {
 		return &deletedIds, err
 	}
@@ -281,12 +299,14 @@ func main() {
 		panic(err)
 	}
 
-	ctx := context.TODO()
 	for _, re := range DEFAULT_REGIONS {
-		fmt.Println(re)
-		err := gateway.Initialize(re, ctx)
+		apis, err := gateway.GetGateways(re, context.TODO())
 		if err != nil {
 			fmt.Println(err)
+		}
+		fmt.Printf("%+v\n", apis)
+		for _, i := range *apis {
+			fmt.Println(*i.Name)
 		}
 	}
 }
