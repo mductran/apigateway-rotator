@@ -265,6 +265,20 @@ func (ag *apiGateway) GetGateways(region string, ctx context.Context) (*[]types.
 	return &result, nil
 }
 
+func (ag *apiGateway) GetEndpoints(region string, ctx context.Context) (*[]string, error) {
+	apis, err := ag.GetGateways(region, ctx)
+	if err != nil {
+		return &[]string{}, err
+	}
+
+	endpoints := []string{}
+	for _, i := range *apis {
+		endpoints = append(endpoints, fmt.Sprintf("%s.execute-api.%s.amazonaws.com", *i.Id, region))
+	}
+
+	return &endpoints, nil
+}
+
 // delete all gateways from all regions
 func (ag *apiGateway) DeleteGateways(region string, ctx context.Context) (*[]string, error) {
 
@@ -300,13 +314,10 @@ func main() {
 	}
 
 	for _, re := range DEFAULT_REGIONS {
-		apis, err := gateway.GetGateways(re, context.TODO())
+		endpoints, err := gateway.GetEndpoints(re, context.TODO())
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Printf("%+v\n", apis)
-		for _, i := range *apis {
-			fmt.Println(*i.Name)
-		}
+		fmt.Println(endpoints)
 	}
 }
