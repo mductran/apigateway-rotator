@@ -1,4 +1,4 @@
-module apigateway-rotator
+module github.com/mductran/apigateway-rotator
 
 go 1.22.1
 
