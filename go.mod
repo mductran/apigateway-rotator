@@ -1,4 +1,4 @@
-module iprotator
+module apigateway-rotator
 
 go 1.22.1
 
