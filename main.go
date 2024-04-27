@@ -16,58 +16,39 @@ import (
 )
 
 var (
-	DEFAULT_REGIONS = []string{
+	DefaultRegions = []string{
 		"us-east-1", "us-east-2",
 	}
-
-	EXTRA_REGIONS = append(DEFAULT_REGIONS,
-		"us-west-1", "us-west-2",
-		"eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
-		"ca-central-1", "ap-south-1", "ap-northeast-3", "ap-northeast-2",
-		"ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
-		"sa-east-1",
-	)
-
-	ALL_REGIONS = append(EXTRA_REGIONS,
-		"ap-east-1", "af-south-1", "eu-south-1", "me-south-1",
-		"eu-north-1",
-	)
 )
 
-type apiGateway struct {
+type ApiGateway struct {
 	Site      string
 	Name      string
 	Endpoints []string
 	Regions   []string
 }
 
-type ApiGateway interface {
-	Initialize()
-	Start()
-	Reroute()
-}
-
 func randomIpv4() net.IP {
 	buf := make([]byte, 4)
 	ip := rand.Uint32()
 	binary.LittleEndian.PutUint32(buf, ip)
-	return net.IP(buf)
+	return buf
 }
 
-func NewApiGateway(site, name string) (*apiGateway, error) {
+func NewApiGateway(site, name string) (*ApiGateway, error) {
 	if site[len(site)-1] == '/' {
 		site = strings.TrimRight(site, "/")
 	}
 
-	return &apiGateway{
+	return &ApiGateway{
 		Site:      site,
 		Name:      name,
 		Endpoints: []string{},
-		Regions:   DEFAULT_REGIONS,
+		Regions:   DefaultRegions,
 	}, nil
 }
 
-// check if an api already exists in region
+// ApiExistsInRegion check if an api already exists in region
 func ApiExistsInRegion(client *apigateway.Client, name string, region string) bool {
 	output, err := client.GetRestApis(context.TODO(), &apigateway.GetRestApisInput{})
 	if err != nil {
@@ -75,15 +56,15 @@ func ApiExistsInRegion(client *apigateway.Client, name string, region string) bo
 	}
 
 	for _, api := range output.Items {
-		if string(*api.Name) == name {
+		if *api.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
-// initializes the API Gateway in the specified region.
-func (ag *apiGateway) Initialize(region string, ctx context.Context) error {
+// Initialize create a gateway resource in specified region.
+func (ag *ApiGateway) Initialize(region string, ctx context.Context) error {
 
 	fmt.Println("initializing")
 
@@ -115,7 +96,7 @@ func (ag *apiGateway) Initialize(region string, ctx context.Context) error {
 	authorizationType := "NONE"
 	params := make(map[string]bool)
 	params["method.request.path.proxy"] = true                  // ensures the path portion of the incoming request URL gets forwarded to the target site
-	params["method.request.header.X-Forwarded-For-Temp"] = true // preserve X-Forwarded-For header by using a temp header X-My-X-Fowarded-For
+	params["method.request.header.X-Forwarded-For-Temp"] = true // preserve X-Forwarded-For header by using a temp header X-My-X-Forwarded-For
 
 	// allow all methods to new resource
 	_, err = client.PutMethod(ctx, &apigateway.PutMethodInput{
@@ -193,26 +174,28 @@ func (ag *apiGateway) Initialize(region string, ctx context.Context) error {
 		return err
 	}
 
+	ag.Endpoints = append(ag.Endpoints, fmt.Sprintf("%s.execute-api.%s.amazonaws.com", *newApi.Id, region))
+
 	return nil
 }
 
-// route the original request through a proxy
-func (ag *apiGateway) Reroute(request *http.Request) {
+// Reroute sends the original request through a proxy
+func (ag *ApiGateway) Reroute(request *http.Request) *http.Request {
 	// use a random endpoints as proxy
-	ep := ag.Endpoints[rand.Intn(len(ag.Endpoints)-1)]
 
-	// replace request's url with proxy endpoint and replace Host header
-	_, site, found := strings.Cut(request.RequestURI, "://")
-	if !found {
-		return
-	}
+	fmt.Printf("before modification: %+v\n", request.Header)
 
-	proxyUrl, err := url.Parse("https://" + ep + "/ProxyStage" + site)
+	endpoint := ag.Endpoints[rand.Intn(len(ag.Endpoints)-1)]
+
+	//fmt.Printf("request uri: %s\n", request.URL.)
+
+	proxyUrl, err := url.Parse("https://" + endpoint + "/ProxyStage/" + request.Host)
 	if err != nil {
-		return
+		fmt.Printf("Error parsing url: %s", err)
+		return request
 	}
 	request.URL = proxyUrl
-	request.Header.Add("Host", ep)
+	request.Host = endpoint
 
 	// generate X-Forwarded-For header if original request does not have it
 	// and move original X-Forwarded-For to a temp header
@@ -224,10 +207,14 @@ func (ag *apiGateway) Reroute(request *http.Request) {
 		request.Header.Add("X-Forwarded-For-Temp", val)
 	}
 	request.Header.Del("X-Forwarded-For")
+
+	fmt.Printf("after modification: %+v\n", request.Header)
+
+	return request
 }
 
-func (ag *apiGateway) GetGateways(region string, ctx context.Context) (*[]types.RestApi, error) {
-	result := []types.RestApi{}
+func (ag *ApiGateway) GetGateways(region string, ctx context.Context) (*[]types.RestApi, error) {
+	var result []types.RestApi
 	defaultPosition := ""
 	var defaultLimit int32 = 500
 	complete := false
@@ -237,7 +224,6 @@ func (ag *apiGateway) GetGateways(region string, ctx context.Context) (*[]types.
 		panic(err)
 	}
 	cfg.Region = region
-	fmt.Println(cfg.Region)
 	client := apigateway.NewFromConfig(cfg)
 
 	for !complete {
@@ -265,13 +251,13 @@ func (ag *apiGateway) GetGateways(region string, ctx context.Context) (*[]types.
 	return &result, nil
 }
 
-func (ag *apiGateway) GetEndpoints(region string, ctx context.Context) (*[]string, error) {
+func (ag *ApiGateway) GetEndpoints(region string, ctx context.Context) (*[]string, error) {
 	apis, err := ag.GetGateways(region, ctx)
 	if err != nil {
 		return &[]string{}, err
 	}
 
-	endpoints := []string{}
+	var endpoints []string
 	for _, i := range *apis {
 		endpoints = append(endpoints, fmt.Sprintf("%s.execute-api.%s.amazonaws.com", *i.Id, region))
 	}
@@ -279,8 +265,7 @@ func (ag *apiGateway) GetEndpoints(region string, ctx context.Context) (*[]strin
 	return &endpoints, nil
 }
 
-// delete all gateways from all regions
-func (ag *apiGateway) DeleteGateways(region string, ctx context.Context) (*[]string, error) {
+func (ag *ApiGateway) DeleteGateways(region string, ctx context.Context) (*[]string, error) {
 
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
@@ -289,7 +274,7 @@ func (ag *apiGateway) DeleteGateways(region string, ctx context.Context) (*[]str
 	cfg.Region = region
 	client := apigateway.NewFromConfig(cfg)
 
-	deletedIds := []string{}
+	var deletedIds []string
 	apis, err := ag.GetGateways(region, ctx)
 	if err != nil {
 		return &deletedIds, err
@@ -305,19 +290,4 @@ func (ag *apiGateway) DeleteGateways(region string, ctx context.Context) (*[]str
 	}
 
 	return &deletedIds, nil
-}
-
-func main() {
-	gateway, err := NewApiGateway("https://mangahere.cc", "mangahere")
-	if err != nil {
-		panic(err)
-	}
-
-	for _, re := range DEFAULT_REGIONS {
-		endpoints, err := gateway.GetEndpoints(re, context.TODO())
-		if err != nil {
-			fmt.Println(err)
-		}
-		fmt.Println(endpoints)
-	}
 }
